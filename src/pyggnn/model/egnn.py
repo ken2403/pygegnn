@@ -1,18 +1,18 @@
 from typing import Literal, Optional
 
-import torch
 import torch.nn as nn
 from torch import Tensor
 
-from pygegnn.data import DataKeys
-from pygegnn.initialize import AtomicNum2Node
-from pygegnn.conv import EGNNConv
-from pygegnn.out import Node2Property
+from pyggnn.data import DataKeys
+from pyggnn.nn.embedding import AtomicNum2Node
+from pyggnn.nn.conv import EGNNConv
+from pyggnn.nn.out import Node2Property
+from pyggnn.model.base import BaseGNN
 
 __all__ = ["EGNN"]
 
 
-class EGNN(nn.Module):
+class EGNN(BaseGNN):
     """
     EGNN implemeted by using PyTorch Geometric.
     From atomic structure, predict global property such as total energy.
@@ -33,9 +33,12 @@ class EGNN(nn.Module):
         edge_dim: int,
         n_conv_layer: int,
         out_dim: int = 1,
-        hidden_dim: int = 128,
+        cutoff_net: Optional[nn.Module] = None,
+        cutoff_radi: Optional[float] = None,
+        hidden_dim: int = 256,
         aggr: Literal["add", "mean"] = "add",
         residual: bool = True,
+        batch_norm: bool = False,
         edge_attr_dim: Optional[int] = None,
         share_weight: bool = False,
         swish_beta: Optional[float] = 1.0,
@@ -46,14 +49,17 @@ class EGNN(nn.Module):
             node_dim (int): number of node embedding dim.
             edge_dim (int): number of edge embedding dim.
             n_conv_layer (int): number of convolutinal layers.
+            cutoff_radi (float): cutoff radious.
             out_dim (int, optional): number of output property dimension.
                 Defaults to `1`.
             hidden_dim (int, optional): number of hidden layers.
-                Defaults to `128`.
+                Defaults to `256`.
             aggr (`"add"` or `"mean"`, optional): if set to `"add"`, sumaggregation
                 is done along node dimension. Defaults to `"add"`.
             residual (bool, optional): if `False`, no residual network.
                 Defaults to `True`.
+            batch_norm (bool, optional): if `False`, no batch normalization in
+                convolution layers. Defaults to `False`.
             edge_attr_dim (int, optional): number of edge attrbute dim.
                 Defaults to `None`.
             share_weight (bool, optional): if `True`, all convolution layers
@@ -74,9 +80,12 @@ class EGNN(nn.Module):
                         edge_attr_dim=edge_attr_dim,
                         node_hidden=hidden_dim,
                         edge_hidden=hidden_dim,
+                        cutoff_net=cutoff_net,
+                        cutoff_radi=cutoff_radi,
                         beta=swish_beta,
                         aggr=aggr,
                         residual=residual,
+                        batch_norm=batch_norm,
                     )
                     * n_conv_layer
                 ]
@@ -90,9 +99,12 @@ class EGNN(nn.Module):
                         edge_attr_dim=edge_attr_dim,
                         node_hidden=hidden_dim,
                         edge_hidden=hidden_dim,
+                        cutoff_net=cutoff_net,
+                        cutoff_radi=cutoff_radi,
                         beta=swish_beta,
                         aggr=aggr,
                         residual=residual,
+                        batch_norm=batch_norm,
                     )
                     for _ in range(n_conv_layer)
                 ]
@@ -105,27 +117,6 @@ class EGNN(nn.Module):
             beta=swish_beta,
             aggr=aggr,
         )
-
-    def calc_atomic_distances(self, data) -> Tensor:
-        if data.get(DataKeys.Batch) is not None:
-            batch = data[DataKeys.Batch]
-        else:
-            batch = data[DataKeys.Position].new_zeros(
-                data[DataKeys.Position].shape[0], dtype=torch.long
-            )
-
-        edge_src, edge_dst = data[DataKeys.Edge_index][0], data[DataKeys.Edge_index][1]
-        edge_batch = batch[edge_src]
-        edge_vec = (
-            data[DataKeys.Position][edge_dst]
-            - data[DataKeys.Position][edge_src]
-            + torch.einsum(
-                "ni,nij->nj",
-                data[DataKeys.Edge_shift],
-                data[DataKeys.Lattice][edge_batch],
-            )
-        )
-        return torch.norm(edge_vec, dim=1)
 
     def forward(self, data_batch) -> Tensor:
         batch = data_batch[DataKeys.Batch]

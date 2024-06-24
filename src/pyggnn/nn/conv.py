@@ -6,8 +6,8 @@ import torch.nn as nn
 from torch_geometric.nn.conv import MessagePassing
 from torch_geometric.typing import Adj
 
-from pygegnn.activation import Swish
-from pygegnn.base import Dense
+from pyggnn.nn.activation import Swish
+from pyggnn.nn.base import Dense
 
 
 __all__ = ["EGNNConv"]
@@ -95,11 +95,13 @@ class EGNNConv(MessagePassing):
         x_dim: Union[int, Tuple[int, int]],
         edge_dim: int,
         edge_attr_dim: Optional[int] = None,
-        node_hidden: int = 128,
-        edge_hidden: int = 128,
+        node_hidden: int = 256,
+        edge_hidden: int = 256,
         beta: Optional[float] = None,
+        cutoff_net: Optional[nn.Module] = None,
+        cutoff_radi: Optional[float] = None,
         residual: bool = True,
-        batch_norm: bool = True,
+        batch_norm: bool = False,
         aggr: Optional[str] = "add",
         **kwargs,
     ):
@@ -109,17 +111,18 @@ class EGNNConv(MessagePassing):
                 object, the first one is input dim, and second one is output dim.
             edge_dim (int): number of edge dim.
             edge_attr_dim (int or `None`, optional): number of another edge
-                attribute dim.
-                Defaults to `None`.
+                attribute dim. Defaults to `None`.
             node_hidden (int, optional): dimension of node hidden layers.
-                Defaults to `128`.
+                Defaults to `256`.
             edge_hidden (int, optional): dimension of edge hidden layers.
-                Defaults to `128`.
+                Defaults to `256`.
             beta (float or None, optional): beta coeff. Defaults to `None`.
+            cutoff_net (nn.Module, optional): cutoff network. Defaults to `None`.
+            cutoff_radi (float, optional): cutoff radious. Defaults to `None`.
             residual (bool, optional): if set to `False`, no residual network is used.
                 Defaults to `True`.
             batch_norm (bool, optional): if set to `False`, no batch normalization is
-                used. Defaults to `True`.
+                used. Defaults to `False`.
             aggr (str, optional): aggregation method. Defaults to `"add"`.
         """
         super().__init__(aggr=aggr, **kwargs)
@@ -129,6 +132,13 @@ class EGNNConv(MessagePassing):
         self.node_hidden = node_hidden
         self.edge_hidden = edge_hidden
         self.beta = beta
+        if cutoff_net is None:
+            self.cutoff_net = None
+        else:
+            assert (
+                cutoff_radi is not None
+            ), "cutoff_radi must be set if cutoff_net is set"
+            self.cutoff_net = cutoff_net(cutoff_radi)
         self.residual = residual
         self.batch_norm = batch_norm
 
@@ -146,6 +156,7 @@ class EGNNConv(MessagePassing):
                     x_dim[0] * 2 + 1 + edge_attr_dim,
                     edge_hidden,
                     bias=True,
+                    activation_name="sigmoid",
                 ),
                 Swish(beta),
                 Dense(edge_hidden, edge_dim, bias=True),
@@ -154,15 +165,21 @@ class EGNNConv(MessagePassing):
         )
         self.node_func = nn.ModuleList(
             [
-                Dense(x_dim[0] + edge_dim, node_hidden, bias=True),
+                Dense(
+                    x_dim[0] + edge_dim,
+                    node_hidden,
+                    bias=True,
+                    activation_name="sigmoid",
+                ),
                 Swish(beta),
                 Dense(node_hidden, x_dim[1], bias=True),
             ]
         )
-        # inferring the edge
-        self.inf = Dense(
+        # attention the edge
+        self.atten = Dense(
             edge_dim, 1, bias=True, activation=torch.sigmoid, activation_name="sigmoid"
         )
+        # batch normalization
         if batch_norm:
             self.bn = nn.BatchNorm1d(x_dim[1])
         else:
@@ -173,7 +190,7 @@ class EGNNConv(MessagePassing):
             ef.reset_parameters()
         for nf in self.node_func:
             nf.reset_parameters()
-        self.inf.reset_parameters()
+        self.atten.reset_parameters()
         self.bn.reset_parameters()
 
     def forward(
@@ -208,14 +225,19 @@ class EGNNConv(MessagePassing):
     ) -> Tensor:
         # update edge
         if edge_attr is None:
-            edge_new = torch.cat([x_i, x_j, dist.unsqueeze(-1)], dim=-1)
+            edge_new = torch.cat([x_i, x_j, torch.pow(dist, 2).unsqueeze(-1)], dim=-1)
         else:
             assert edge_attr.size[-1] == self.edge_attr_dim
-            edge_new = torch.cat([x_i, x_j, dist.unsqueeze(-1), edge_attr], dim=-1)
+            edge_new = torch.cat(
+                [x_i, x_j, torch.pow(dist, 2).unsqueeze(-1), edge_attr], dim=-1
+            )
         for ef in self.edge_func:
             edge_new = ef(edge_new)
 
-        # get inferring weight
-        edge_new = self.inf(edge_new) * edge_new
+        # cutoff net
+        if self.cutoff_net is not None:
+            edge_new = self.cutoff_net(dist).unsqueeze(-1) * edge_new
+        # get attention weight
+        edge_new = self.atten(edge_new) * edge_new
 
         return edge_new

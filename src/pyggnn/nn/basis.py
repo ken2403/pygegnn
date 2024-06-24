@@ -1,48 +1,11 @@
-from typing import Optional
-
 import torch
 from torch import Tensor
 import torch.nn as nn
 
-__all__ = ["AtomicNum2Node", "Distance2GaussianEdge"]
+__all__ = ["GaussianRBF"]
 
 
-class AtomicNum2Node(nn.Embedding):
-    """
-    The block to calculate initial node embeddings.
-    Convert atomic numbers to a vector of arbitrary dimension.
-    """
-
-    def __init__(
-        self,
-        embedding_dim: int,
-        max_num: Optional[int] = None,
-    ):
-        """
-        Args:
-            embedding_dim (int): number of embedding dim.
-            max_num (int, optional): number of max value of atomic number.
-                if set to`None`, `max_num=100`. Defaults to `None`.
-        """
-        if max_num is None:
-            max_num = 100
-        super().__init__(num_embeddings=max_num, embedding_dim=embedding_dim)
-
-    def forward(self, x: Tensor) -> Tensor:
-        """
-        Computed the initial node embedding.
-
-        Args:
-            x (Tensor): atomic numbers of (num_nodes) shape.
-
-        Returns:
-            Tensor: embedding nodes of (num_nodes x embedding_dim) shape.
-        """
-        x = super().forward(x)
-        return x
-
-
-def gaussian_filter(
+def gaussian_rbf(
     distances: Tensor,
     offsets: Tensor,
     widths: Tensor,
@@ -72,7 +35,7 @@ def gaussian_filter(
     return filtered_distances
 
 
-class Distance2GaussianEdge(nn.Module):
+class GaussianRBF(nn.Module):
     def __init__(
         self,
         start: float = 0.0,
@@ -94,7 +57,7 @@ class Distance2GaussianEdge(nn.Module):
 
     def forward(self, distances: Tensor) -> Tensor:
         """
-        Compute filtered distances with Gaussian filter.
+        Compute filtered distances with Gaussian functions.
 
         Args:
             distances (Tensor): interatomic distance values of (num_edge) shape.
@@ -102,6 +65,6 @@ class Distance2GaussianEdge(nn.Module):
         Returns:
             filtered_distances (Tensor): filtered distances of (num_edge x n_dim) shape.
         """
-        return gaussian_filter(
+        return gaussian_rbf(
             distances, offsets=self.offset, widths=self.width, centered=self.centered
         )

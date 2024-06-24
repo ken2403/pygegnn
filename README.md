@@ -1,1 +1,1 @@
-# PyGEGNN
+# PyGGNN
